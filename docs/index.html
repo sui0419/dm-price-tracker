@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>デュエマ買取価格の変動</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --ink: #1d1d1f; --sub: #6b6b70; --line: #e4e2dd;
+    --up: #c62828; --down: #1565c0; --accent: #d9362b; --hot: #ef6c00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151517; --card: #1f1f22; --ink: #f2f2f4; --sub: #a0a0a8; --line: #333338;
+            --up: #ff6b6b; --down: #64b5f6; --accent: #ff5a4f; --hot: #ffa040; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font-family: -apple-system, "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif; font-size: 15px; }
+  header { background: var(--accent); color: #fff; padding: 14px 16px 12px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header .meta { font-size: 12px; opacity: .9; margin-top: 4px; }
+  .controls { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 10px 12px 8px;
+              border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+  .seg { display: flex; gap: 4px; overflow-x: auto; }
+  .seg button { flex: 0 0 auto; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+                border-radius: 999px; padding: 6px 12px; font-size: 13px; }
+  .seg button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .row2 { display: flex; gap: 8px; align-items: center; }
+  .row2 input[type=search] { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px;
+                             border: 1px solid var(--line); background: var(--card); color: var(--ink); font-size: 14px; }
+  .row2 select { padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font-size: 13px; }
+  label.chk { font-size: 13px; white-space: nowrap; }
+  .summary { padding: 8px 14px; font-size: 13px; color: var(--sub); }
+  ul { list-style: none; margin: 0; padding: 0 10px 40px; }
+  li { background: var(--card); border-radius: 12px; margin-bottom: 8px; border: 1px solid var(--line); overflow: hidden; }
+  .head { display: flex; gap: 10px; padding: 11px 12px; cursor: pointer; align-items: center; }
+  .head .nm { flex: 1; min-width: 0; }
+  .head .nm b { display: block; font-weight: 600; font-size: 14px; line-height: 1.35; }
+  .head .nm small { color: var(--sub); font-size: 12px; }
+  .badge { display: inline-block; font-size: 10px; color: #fff; background: var(--hot); border-radius: 4px;
+           padding: 1px 5px; margin-left: 4px; vertical-align: 1px; }
+  .badge.gone { background: var(--sub); }
+  .px { text-align: right; white-space: nowrap; }
+  .px .now { font-weight: 700; font-size: 15px; }
+  .px .d { font-size: 12px; font-weight: 600; }
+  .up { color: var(--up); } .down { color: var(--down); }
+  .detail { display: none; padding: 0 12px 12px; }
+  li.open .detail { display: block; }
+  svg { width: 100%; height: auto; display: block; }
+  .pts { font-size: 12px; color: var(--sub); margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .empty { text-align: center; color: var(--sub); padding: 40px 20px; line-height: 1.7; }
+</style>
+</head>
+<body>
+<header>
+  <h1>デュエマ買取価格の変動</h1>
+  <div class="meta" id="meta">読み込み中…</div>
+</header>
+
+<div class="controls">
+  <div class="seg" id="period">
+    <button data-v="last" class="on">前回比</button>
+    <button data-v="7">7日</button>
+    <button data-v="30">30日</button>
+    <button data-v="90">90日</button>
+    <button data-v="all">全期間</button>
+  </div>
+  <div class="seg" id="dir">
+    <button data-v="all" class="on">すべて</button>
+    <button data-v="up">上昇</button>
+    <button data-v="down">下落</button>
+  </div>
+  <div class="row2">
+    <input type="search" id="q" placeholder="カード名・型番で検索">
+    <select id="sort">
+      <option value="abs">変動額順</option>
+      <option value="pct">変動率順</option>
+      <option value="price">価格の高い順</option>
+      <option value="recent">最近変わった順</option>
+    </select>
+  </div>
+  <div class="row2"><label class="chk"><input type="checkbox" id="hotOnly"> 買取強化中のみ</label></div>
+</div>
+
+<div class="summary" id="summary"></div>
+<ul id="list"></ul>
+
+<script>
+const yen = n => "¥" + n.toLocaleString("ja-JP");
+const state = { period: "last", dir: "all", q: "", sort: "abs", hotOnly: false };
+let DATA = null;
+
+function addDays(dateStr, n) {
+  const d = new Date(dateStr + "T00:00:00+09:00");
+  d.setDate(d.getDate() + n);
+  return d.toLocaleDateString("sv-SE", { timeZone: "Asia/Tokyo" });
+}
+// 指定日の時点の価格（その日以前で最後の記録）
+function priceAt(points, date) {
+  let v = null;
+  for (const p of points) { if (p[0] <= date) v = p; else break; }
+  return v;
+}
+function baseDate() {
+  const runs = DATA.runs;
+  if (state.period === "last") return runs.length >= 2 ? runs[runs.length - 2].date : null;
+  if (state.period === "all") return "0000-00-00";
+  return addDays(DATA.updated, -Number(state.period));
+}
+
+function compute() {
+  const bd = baseDate();
+  const q = state.q.trim().toLowerCase();
+  const rows = [];
+  for (const c of DATA.cards) {
+    const pts = c.p;
+    const last = pts[pts.length - 1];
+    let base = bd === null ? null : (priceAt(pts, bd) || pts[0]);
+    if (state.period === "all") base = pts[0];
+    if (!base) continue;
+    const diff = last[1] - base[1];
+    if (diff === 0) continue;
+    if (state.dir === "up" && diff <= 0) continue;
+    if (state.dir === "down" && diff >= 0) continue;
+    if (state.hotOnly && !last[2]) continue;
+    if (q && !(c.n.toLowerCase().includes(q) || c.m.toLowerCase().includes(q))) continue;
+    rows.push({ c, now: last[1], base: base[1], diff, pct: diff / base[1] * 100,
+                hot: !!last[2], gone: c.s < DATA.updated, changed: lastChangeDate(pts) });
+  }
+  const s = state.sort;
+  rows.sort((a, b) =>
+    s === "abs" ? Math.abs(b.diff) - Math.abs(a.diff) :
+    s === "pct" ? Math.abs(b.pct) - Math.abs(a.pct) :
+    s === "price" ? b.now - a.now :
+    b.changed.localeCompare(a.changed) || Math.abs(b.diff) - Math.abs(a.diff));
+  return rows;
+}
+function lastChangeDate(pts) {
+  for (let i = pts.length - 1; i > 0; i--) if (pts[i][1] !== pts[i - 1][1]) return pts[i][0];
+  return pts[0][0];
+}
+
+function chart(c) {
+  const pts = c.p.slice();
+  const end = c.s || DATA.updated;
+  const series = pts.concat(end > pts[pts.length - 1][0] ? [[end, pts[pts.length - 1][1], pts[pts.length - 1][2]]] : []);
+  const t = d => new Date(d + "T00:00:00+09:00").getTime();
+  const W = 340, H = 170, L = 52, R = 10, T = 12, B = 26;
+  const t0 = t(series[0][0]), t1 = Math.max(t(series[series.length - 1][0]), t0 + 86400000);
+  let lo = Math.min(...series.map(p => p[1])), hi = Math.max(...series.map(p => p[1]));
+  const pad = Math.max((hi - lo) * 0.15, hi * 0.05, 10); lo = Math.max(0, lo - pad); hi += pad;
+  const x = d => L + (t(d) - t0) / (t1 - t0) * (W - L - R);
+  const y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  let path = "";
+  series.forEach((p, i) => {
+    path += i === 0 ? `M${x(p[0])},${y(p[1])}` : `H${x(p[0])}V${y(p[1])}`;
+  });
+  const dots = pts.map(p => `<circle cx="${x(p[0])}" cy="${y(p[1])}" r="3.5" fill="${p[2] ? "var(--hot)" : "var(--ink)"}"/>`).join("");
+  const grid = [hi, (hi + lo) / 2, lo].map(v =>
+    `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>` +
+    `<text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="10" fill="var(--sub)">${Math.round(v).toLocaleString()}</text>`).join("");
+  const md = d => d.slice(5).replace("-", "/");
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${c.n}の価格推移">${grid}
+    <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2"/>${dots}
+    <text x="${L}" y="${H - 6}" font-size="10" fill="var(--sub)">${md(series[0][0])}</text>
+    <text x="${W - R}" y="${H - 6}" font-size="10" fill="var(--sub)" text-anchor="end">${md(series[series.length - 1][0])}</text></svg>
+    <div class="pts">${pts.map(p => `<span>${md(p[0])} ${yen(p[1])}${p[2] ? "🔥" : ""}</span>`).join("")}</div>`;
+}
+
+function render() {
+  const rows = compute();
+  const list = document.getElementById("list");
+  const bd = baseDate();
+  const label = state.period === "last" ? "前回の記録" : state.period === "all" ? "記録開始" : `${state.period}日前`;
+  document.getElementById("summary").textContent =
+    bd === null ? "記録が2日分たまると変動が表示されます。" :
+    `${label}からの変動：${rows.length}件（上昇 ${rows.filter(r => r.diff > 0).length} / 下落 ${rows.filter(r => r.diff < 0).length}）`;
+  if (!rows.length) {
+    list.innerHTML = `<div class="empty">${bd === null ? "まだ比較できる記録がありません。<br>明日以降、価格が動いたカードがここに並びます。" : "条件に合う変動はありません。"}</div>`;
+    return;
+  }
+  list.innerHTML = rows.slice(0, 500).map((r, i) => `
+    <li data-i="${i}">
+      <div class="head">
+        <div class="nm"><b>${esc(r.c.n)}${r.hot ? '<span class="badge">強化中</span>' : ""}${r.gone ? '<span class="badge gone">掲載なし</span>' : ""}</b>
+          <small>${esc(r.c.m)}　${yen(r.base)} → </small></div>
+        <div class="px"><div class="now">${yen(r.now)}</div>
+          <div class="d ${r.diff > 0 ? "up" : "down"}">${r.diff > 0 ? "▲" : "▼"}${yen(Math.abs(r.diff))}（${r.diff > 0 ? "+" : ""}${r.pct.toFixed(1)}%）</div></div>
+      </div>
+      <div class="detail"></div>
+    </li>`).join("");
+  list.querySelectorAll("li").forEach(li => {
+    li.querySelector(".head").addEventListener("click", () => {
+      const d = li.querySelector(".detail");
+      if (!d.innerHTML) d.innerHTML = chart(rows[+li.dataset.i].c);
+      li.classList.toggle("open");
+    });
+  });
+}
+function esc(s) { return s.replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch])); }
+
+function bindSeg(id, key) {
+  document.getElementById(id).addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    document.querySelectorAll(`#${id} button`).forEach(x => x.classList.toggle("on", x === b));
+    state[key] = b.dataset.v; render();
+  });
+}
+bindSeg("period", "period"); bindSeg("dir", "dir");
+document.getElementById("q").addEventListener("input", e => { state.q = e.target.value; render(); });
+document.getElementById("sort").addEventListener("change", e => { state.sort = e.target.value; render(); });
+document.getElementById("hotOnly").addEventListener("change", e => { state.hotOnly = e.target.checked; render(); });
+
+fetch("data.json?" + Date.now()).then(r => r.json()).then(d => {
+  DATA = d;
+  const last = d.runs[d.runs.length - 1];
+  document.getElementById("meta").textContent =
+    `最終更新 ${d.updated}　記録 ${d.runs.length}日分　対象 ${d.tracked.toLocaleString()}件（${yen(d.range[0])}〜${yen(d.range[1])}）`;
+  render();
+}).catch(() => {
+  document.getElementById("meta").textContent = "データがまだありません";
+  document.getElementById("list").innerHTML = '<div class="empty">初回の記録が終わるとここに表示されます。</div>';
+});
+</script>
+</body>
+</html>
